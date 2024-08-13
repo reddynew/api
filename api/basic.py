@@ -14,7 +14,7 @@ def get_data():
     if key== api_key:
         return jsonify(data.to_dict(orient='records'))
     else:
-        return 'No Authorization',404
+        return 'No Authorization'
 if __name__ == '__main__':
     app.run(debug=True)
         
