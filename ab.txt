@@ -1,0 +1,94 @@
+import boto3
+import yaml
+from pyspark.sql import SparkSession
+
+# Function to load YAML configuration from S3
+def load_config_from_s3(bucket_name, key):
+    s3 = boto3.client('s3')
+    obj = s3.get_object(Bucket=bucket_name, Key=key)
+    config = yaml.safe_load(obj['Body'].read())
+    return config
+
+# Handler to pull messages from SQS
+def handle_sqs(parameters):
+    sqs = boto3.client('sqs')
+    queue_url = parameters['queue_url']
+    wait_time_seconds = parameters.get('wait_time_seconds', 0)
+    
+    response = sqs.receive_message(
+        QueueUrl=queue_url,
+        MaxNumberOfMessages=1,
+        WaitTimeSeconds=wait_time_seconds
+    )
+    
+    messages = response.get('Messages', [])
+    if messages:
+        print(f"Received message: {messages[0]['Body']}")
+        # Process the message here...
+        sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=messages[0]['ReceiptHandle'])
+    else:
+        print("No messages received")
+
+# Handler to pull data from S3
+def handle_s3_pull(parameters):
+    bucket_name = parameters['bucket_name']
+    key_prefix = parameters['file_name']
+    
+    input_path = f"s3://{bucket_name}/{key_prefix}/"
+    
+    spark = SparkSession.builder.getOrCreate()
+    dataframe = spark.read.csv(input_path)  # Or use other formats like CSV, JSON, etc.
+    
+    print(f"Data successfully pulled from {input_path}")
+    return dataframe
+
+# Handler to load data into S3
+def handle_s3_load(parameters, dataframe):
+    bucket_name = parameters['bucket_name']
+    # key_prefix = parameters['file_name']
+    
+    output_path = f"s3://{bucket_name}/config/"
+    
+    dataframe.write.mode("overwrite").parquet(output_path)
+    print(f"Data successfully loaded to {output_path}")
+
+# Handler to apply SQL transformations
+def handle_sql_transform(parameters, dataframe):
+    query = parameters['query']
+    
+    dataframe.createOrReplaceTempView("temp_table")
+    spark = SparkSession.builder.getOrCreate()
+    transformed_df = spark.sql(query)
+    
+    print("SQL transformation completed.")
+    return transformed_df
+
+# Function to execute steps in the pipeline
+def run_step(step_type, parameters, dataframe=None):
+    if step_type == 'sqs':
+        handle_sqs(parameters)
+    elif step_type == 's3':
+        operation = parameters.get('operation', 'default')
+        if operation == 'pull':
+            return handle_s3_pull(parameters)
+        elif operation == 'load':
+            handle_s3_load(parameters, dataframe)
+    elif step_type == 'sql':
+        return handle_sql_transform(parameters, dataframe)
+    else:
+        raise ValueError(f"Unsupported step type: {step_type}")
+
+# Main Glue job logic
+def main():
+    # Load pipeline configuration from S3
+    config = load_config_from_s3('templatedemobucket', 'config.yml')
+    
+    dataframe = None
+    for step in config['steps']:
+        print(f"Running step: {step['name']}")
+        dataframe = run_step(step['type'], step['parameters'], dataframe)
+
+# Entry point for Glue job
+if __name__ == "__main__":
+    main()
+	
